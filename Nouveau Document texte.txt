@@ -1,0 +1,446 @@
+--creer user :
+adduser <nom>
+
+
+
+
+
+--pour changer les dns : 
+/etc/hosts
+
+
+
+
+
+--voir les sites en cours d'exec:
+jobs
+
+
+
+
+
+
+--demarrer/arreter un site.conf:
+a2ensite/a2dissite site.conf
+
+
+
+
+
+--reverse proxy .conf (ici pour site en https port 443, il faut certificat ssl):
+<VirtualHost *:443>
+        ServerName jetty
+
+        ServerAdmin webmaster@localhost
+
+        # attention / final !!!
+        ProxyPass /  http://localhost:8080/
+        ProxyPassReverse / http://localhost:8080/
+
+        ErrorLog ${APACHE_LOG_DIR}/monsite_error.log
+        CustomLog ${APACHE_LOG_DIR}/monsite_access.log combined
+
+        SSLEngine on
+        SSLCertificateFile /etc/apache2/ssl/apache.crt
+        SSLCertificateKeyFile /etc/apache2/ssl/apache.key
+
+</VirtualHost>
+
+
+
+
+
+
+
+
+--reset cache navigateur:
+ctrl-f5
+
+
+
+
+
+
+
+
+
+--dockerfile app apache http : 
+FROM debian
+RUN apt-get update
+RUN apt-get install apache2 -y
+COPY siteHTML.conf /etc/apache2/sites-available/000-default.conf
+COPY siteHTML /var/www/siteHTML
+EXPOSE 80
+CMD apachectl -D FOREGROUND
+
+
+
+
+
+
+--dockerfile app node:
+FROM node:14
+
+COPY exoplanets /var/www/exoplanets
+
+WORKDIR /var/www/exoplanets
+
+RUN npm install
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
+
+
+
+
+
+
+
+
+
+
+--docker-compose pour node + postgres:
+# docker-compose.yml 
+version: "3.9"
+services:
+  app:
+    build:
+      dockerfile: Dockerfile
+    ports:
+      - 3000:3000
+    depends_on: 
+      postgres_db:
+        condition: service_healthy 
+  postgres_db:
+    image: postgres
+    environment:
+      POSTGRES_PASSWORD: ipl
+      POSTGRES_DB: exoplanets
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+volumes: 
+  pgdata:
+
+
+
+
+
+
+
+
+--loadbalancer:
+.conf:
+<VirtualHost *:80>
+        ServerName monsite.be ==> changer nom (sera utilisé dans le /etc/hosts)
+
+        <Proxy balancer://mycluster>
+            BalancerMember http://127.0.0.1:8080 ==> mettre les bons liens
+            BalancerMember http://127.0.0.1:8081
+        </Proxy>
+        ProxyPreserveHost On
+        ProxyPass / balancer://mycluster/
+        ProxyPassReverse / balancer://mycluster/
+</VirtualHost>
+
+
+DANS HOSTS => 127.0.0.1   monsite.be (remplacer par ServerName dans le .conf)
+
+
+
+
+
+
+
+
+
+--ansible simple:
+---
+- name: moncul
+  hosts: localhost
+  tasks:
+    - name: Cloner le repository
+      git:
+        repo: https://gitlab.vinci.be/olivier.choquet/exoplanets_infra.git
+        dest: ex2
+
+    - name: Installer Node.js
+      apt:
+        name: nodejs
+        state: present
+
+    - name: Installer npm
+      apt:
+        name: npm
+        state: present
+
+    - name: Installer PM2
+      npm:
+        name: pm2
+        global: yes
+
+    - name: Installer les dépendances avec npm install
+      command: npm install
+      args:
+        chdir: ex2
+
+    - name: Lancer l'application avec PM2
+      command: pm2 start npm -- start
+      args:
+        chdir: ex2
+
+
+
+
+
+
+
+
+--ansible role (ansible galaxi):
+==> lancer ansible-galaxy init <roledir>
+==> dans tasks mettre les tasks:
+---
+- name: "Install nodejs"
+  # this will be executed with root account
+  #become: true
+  apt:
+    update_cache: yes
+    name: nodejs
+    state: present
+
+- name: "git clone public repo"
+  ansible.builtin.git:
+    repo: "{{ repoGit }}"
+    dest: "{{ destFolder }}"
+
+- name: "Build app"
+  command: npm install
+  args:
+    chdir:  "{{ destFolder }}"
+
+- name: Install PM2
+  npm:
+    name: pm2
+    global: yes
+
+- name: Start App
+  command: pm2 start npm -- start
+  args:
+   chdir:  "{{ destFolder }}"
+
+==>dans default mettre les vars par defaut:
+---
+repoGit: https://gitlab.vinci.be/olivier.choquet/exoplanets_infra.git
+destFolder: ex1
+
+==> mettre le playbook dans le folder ou se trouve le folder du role mais pas directement dans le folder du role:
+---
+# THIS PLAYBOOK MUST BE LAUNCHED IN ROOT !
+# name of the playbook
+- name: "Install Exoplanets(nodejs) site"
+  # Install only on localhost machine
+  hosts: localhost
+  # Collect info on the system IP Adress, OS information, ....
+  # performance cost !
+  gather_facts: false
+  vars:
+    repoGit: https://gitlab.vinci.be/olivier.choquet/exoplanets_infra.git
+    destFolder: ex1
+  roles:
+    - deploy_nodejs_app_from_git
+
+
+
+
+
+
+--ansible + docker:
+- name: "Docker&Ansible"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Install apt dependencies for Docker
+      apt:
+	update_cache: yes
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg-agent
+          - software-properties-common
+        state: present
+
+    - name: "Add Docker GPG key"
+      apt_key:
+        url: https://download.docker.com/linux/debian/gpg
+        state: present
+
+    - name: "Add Docker repository"
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/debian bookworm stable
+        state: present
+
+    - name: "Install Docker"
+      apt:
+        update_cache: true
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+
+    - name: "Install docker python module via apt"
+      apt:
+        name: python3-docker
+
+    - name: "Pull Docker image from DockerHub"
+      docker_image:
+        name: olivierchoquet/syllabushtml
+        source: pull
+
+    - name: Start Docker container
+      docker_container:
+        name: syllabushtml_container
+        image: olivierchoquet/syllabushtml
+        published_ports: "8081:80"
+        state: started
+
+
+
+
+
+--ansible + terra:
+- name: "Terraform&Ansible"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Install apt dependencies for terraform
+      apt:
+        name:
+          - wget
+          - curl
+          - gnupg
+          - software-properties-common
+        state: present
+
+    - name: "Add hashicorp GPG key"
+      apt_key:
+        url: https://apt.releases.hashicorp.com/gpg
+        state: present
+
+    - name: "Add hashicorp repository"
+      apt_repository:
+        repo: deb [arch=amd64] https://apt.releases.hashicorp.com bookworm stable
+        state: present
+
+    - name: "Install terraform"
+      apt:
+        update_cache: true
+        name:
+          - terraform
+        state: present
+    
+    - name: Add the user 'johnd' with a specific uid and a primary group of 'admin'
+      ansible.builtin.user:
+        name: terra
+        shell: /bin/bash
+        group: sudo
+
+
+
+
+
+
+
+
+
+
+
+
+--terraform:
+
+==> installer
+==> créer fichier main.tf:
+# Configure the Azure provider
+terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "=3.80.0"
+    }
+  }
+  required_version = ">= 1.6.3"
+}
+
+provider "azurerm" {
+  features {}
+}
+
+# Generate a random integer to create a globally unique name
+resource "random_integer" "ri" {
+  min = 10000
+  max = 99999
+}
+
+# Create the resource group
+resource "azurerm_resource_group" "rg" {
+  name     = "myResourceGroup-${random_integer.ri.result}"
+  location = "West Europe"
+}
+
+# Create the Linux App Service Plan
+resource "azurerm_service_plan" "appserviceplan" {
+  name                = "webapp-asp-${random_integer.ri.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  os_type             = "Linux"
+  sku_name            = "F1"
+}
+
+# Create the web app, pass in the App Service Plan ID
+resource "azurerm_linux_web_app" "webapp" {
+  name                = "webapp-${random_integer.ri.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  service_plan_id     = azurerm_service_plan.appserviceplan.id
+  https_only          = true
+  site_config {
+    minimum_tls_version = "1.2"
+    always_on           = false // Required for F1 plan (even though docs say that it defaults to false)
+    use_32_bit_worker   = true  // Required for F1 plan
+    application_stack {
+      node_version = "16-lts"
+    }
+  }
+}
+
+#  Deploy code from a public GitHub repo
+resource "azurerm_app_service_source_control" "sourcecontrol" {
+  app_id                 = azurerm_linux_web_app.webapp.id
+  repo_url               = "https://github.com/olivierchoquet/exoplanets"
+  branch                 = "main"
+  use_manual_integration = true
+  use_mercurial          = false
+}
+
+
+==> lancer les commandes dans le syllabus
+
+--add users:
+adduser <name>
+sudo usermod -aG sudo admin
+==> faire en sorte que tout nouveau utilisateur possede un directory prive et soit ajouté au groupe ipl:
+=>Éditez le fichier /etc/adduser.conf :
+DIR_MODE=0700
+EXTRA_GROUPS="ipl"
+ADD_EXTRA_GROUPS=1
+
+--Personnaliser les home directory:
+changer le contenu de /etc/skel changera le contenu des home directory des users
+
